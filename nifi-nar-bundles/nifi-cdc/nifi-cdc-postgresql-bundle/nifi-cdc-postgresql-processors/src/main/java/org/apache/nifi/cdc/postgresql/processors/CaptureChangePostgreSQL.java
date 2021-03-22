@@ -88,7 +88,11 @@ import java.util.logging.Logger;
 })
 public class CaptureChangePostgreSQL extends AbstractProcessor {
     // Relationships
-    public static final Relationship REL_SUCCESS = new Relationship.Builder().name("success").description("Successfully created FlowFile from CDC event.").build();
+    public static final Relationship REL_SUCCESS = new Relationship.Builder()
+            .name("success")
+            .description("Successfully created FlowFile from CDC event.")
+            .build();
+
     // Properties
     public static final PropertyDescriptor HOST = new PropertyDescriptor.Builder()
             .name("cdc-postgresql-host")
@@ -99,6 +103,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
                     + "to the active node (assuming its host entry is specified in this property.  The default port for PostgreSQL connections is 5432.")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
     public static final PropertyDescriptor DRIVER_NAME = new PropertyDescriptor.Builder()
@@ -125,6 +130,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
             .description("Specifies the name of the database to connect to.")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
     public static final PropertyDescriptor USERNAME = new PropertyDescriptor.Builder()
@@ -133,6 +139,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
             .description("Username to access PostgreSQL (cluster).")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
     public static final PropertyDescriptor PASSWORD = new PropertyDescriptor.Builder()
@@ -142,6 +149,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
             .required(false)
             .sensitive(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
     public static final PropertyDescriptor PUBLICATION = new PropertyDescriptor.Builder()
@@ -150,6 +158,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
             .description("PostgreSQL publication name. A publication is essentially a group of tables whose data changes are intended to be replicated through logical replication.")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
     public static final PropertyDescriptor SLOT_NAME = new PropertyDescriptor.Builder()
@@ -159,6 +168,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
                     + "and the underscore character. Existing replication slots and their state can be seen in the pg_replication_slots view.")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
     public static final PropertyDescriptor SNAPSHOT = new PropertyDescriptor.Builder()
@@ -264,14 +274,9 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
                 // Because the DriverManager will refuse to use a driver not loaded by the
                 // system ClassLoader.
                 final Class<?> clazz = Class.forName(drvName, true, classLoader);
-                if (clazz == null) {
-                    throw new InitializationException("Can't load Database Driver " + drvName + " location" + locationString + "classLoader" + classLoader.toString());
-                }
-                final Driver driver = (Driver) clazz.newInstance();
+                getLogger().info("Successfully loaded class {} using classLoader {}", clazz, classLoader);
+                final Driver driver = (Driver) clazz.getDeclaredConstructor().newInstance();
                 DriverManager.registerDriver(new DriverShim(driver));
-
-            } catch (final InitializationException e) {
-                throw e;
             } catch (final MalformedURLException e) {
                 throw new InitializationException("Invalid Database Driver Jar Url", e);
             } catch (final Exception e) {
@@ -418,7 +423,7 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
         final String host = context.getProperty(HOST).evaluateAttributeExpressions().getValue();
         final String database = context.getProperty(DATABASE_NAME).evaluateAttributeExpressions().getValue();
         final String username = context.getProperty(USERNAME).evaluateAttributeExpressions().getValue();
-        final boolean dropSlotIfExists = context.getProperty(DROP_SLOT_IF_EXISTS).evaluateAttributeExpressions().asBoolean();
+        final boolean dropSlotIfExists = context.getProperty(DROP_SLOT_IF_EXISTS).asBoolean();
         final String publicationName = context.getProperty(PUBLICATION).evaluateAttributeExpressions().getValue();
         final String replicationSlotName = context.getProperty(SLOT_NAME).evaluateAttributeExpressions().getValue();
 
@@ -448,13 +453,13 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
             // because we need the connect-able host same as the PostgreSQL client.
             registerDriver(driverLocation, driverName);
             connectionManager = new ConnectionManager();
-            connectionManager.setProperties(host, database, username, password);
+            connectionManager.setProperties(host, database, username, password, getLogger());
             connectionManager.createSQLConnection();
             connectionManager.createReplicationConnection();
 
             stateMap = stateManager.getState(Scope.CLUSTER);
 
-            pgEasyReplication = new PGEasyReplication(publicationName, replicationSlotName, connectionManager);
+            pgEasyReplication = new PGEasyReplication(publicationName, replicationSlotName, connectionManager, getLogger());
             pgEasyReplication.initializeLogicalReplication(dropSlotIfExists);
 
             if (stateMap.get(LAST_LSN_RECEIVED) != null) {
@@ -474,20 +479,25 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
     private List<Event> getEvents() throws CDCException {
 
         if (hasRun.get()) {
-            return Collections.singletonList(pgEasyReplication.readEvent(simpleEvents, includeBeginCommit));
+            return Collections.singletonList(pgEasyReplication.readEvent(simpleEvents, includeBeginCommit, MIME_TYPE_VALUE));
         }
+
+        getLogger().info("First run...");
 
         List<Event> events = new ArrayList<>();
 
         if (hasSnapshot) {
-            events.add(pgEasyReplication.getSnapshot());
+            getLogger().info("Retrieving snapshot event");
+            events.add(pgEasyReplication.getSnapshot(MIME_TYPE_VALUE));
         }
 
-        if (initialLSN != null) {
-            events.add(pgEasyReplication.readEvent(simpleEvents, includeBeginCommit));
+        if (initialLSN == null) {
+            getLogger().info("Retrieving first events from beginning");
+            events.add(pgEasyReplication.readEvent(simpleEvents, includeBeginCommit, MIME_TYPE_VALUE));
+        } else {
+            getLogger().info("Retrieving first events from initial LSN {}", initialLSN);
+            events.add(pgEasyReplication.readEvent(simpleEvents, includeBeginCommit, MIME_TYPE_VALUE, initialLSN));
         }
-
-        hasRun.set(true);
 
         return events;
     }
@@ -516,8 +526,9 @@ public class CaptureChangePostgreSQL extends AbstractProcessor {
 
                 lastLSNReceived = event.getLastLSN();
             }
-
             session.transfer(listFlowFiles, REL_SUCCESS);
+
+            hasRun.set(true);
         } catch (CDCException cdcException) {
             getLogger().error("Failed to retrieve events.");
             context.yield();

@@ -17,6 +17,7 @@
 package org.apache.nifi.cdc.postgresql
 
 import org.apache.nifi.cdc.postgresql.pgEasyReplication.ConnectionManager
+import org.apache.nifi.logging.ComponentLog
 
 import java.sql.Connection
 import java.sql.DriverManager
@@ -32,12 +33,13 @@ class MockConnectionManager extends ConnectionManager{
     String driverName
     String user
     String password
+    ComponentLog log
     
     Connection sqlConnection
     Connection repConnection
     
     @Override
-    void setProperties(String server, String database, String user, String password) {
+    void setProperties(String server, String database, String user, String password, ComponentLog log) {
         this.server = server;
         this.database = database;
         this.user = user;
@@ -48,6 +50,7 @@ class MockConnectionManager extends ConnectionManager{
         }
 
         this.password = password;
+        this.log = log;
 
     }
 

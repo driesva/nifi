@@ -17,9 +17,12 @@
 
 package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
+import org.apache.nifi.logging.ComponentLog;
+
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.util.Objects;
 import java.util.Properties;
 
 public class ConnectionManager {
@@ -30,8 +33,9 @@ public class ConnectionManager {
     private String password;
     private Connection sqlConnection;
     private Connection repConnection;
+    private ComponentLog log;
 
-    public void setProperties(String server, String database, String user, String password) {
+    public void setProperties(String server, String database, String user, String password, ComponentLog log) {
         this.server = server;
         this.database = database;
         this.user = user;
@@ -41,12 +45,14 @@ public class ConnectionManager {
         }
 
         this.password = password;
+        this.log = Objects.requireNonNull(log);
     }
 
     public void createReplicationConnection() throws SQLException {
 
         String url = "jdbc:postgresql://" + this.server + "/" + this.database;
-
+        log.debug("Creating SQL replication connection for {}", url);
+        
         Properties props = new Properties();
         props.put("user", this.user);
         props.put("password", this.password);
@@ -63,13 +69,14 @@ public class ConnectionManager {
 
     public void closeReplicationConnection() throws SQLException {
         if (repConnection != null) {
+            log.debug("Closing SQL replication connection");
             repConnection.close();
         }
     }
 
     public void createSQLConnection() throws SQLException {
-
         String url = "jdbc:postgresql://" + this.server + "/" + this.database;
+        log.debug("Creating SQL connection for {}", url);
 
         Properties props = new Properties();
         props.put("user", this.user);
@@ -86,6 +93,7 @@ public class ConnectionManager {
 
     public void closeSQLConnection() throws SQLException {
         if (sqlConnection != null) {
+            log.debug("Closing SQL connection");
             sqlConnection.close();
         }
     }

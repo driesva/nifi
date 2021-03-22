@@ -31,6 +31,7 @@ import java.text.ParseException;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 
@@ -40,24 +41,21 @@ public class Stream {
     private final PGReplicationStream repStream;
     private final ConnectionManager connectionManager;
     private final ObjectMapper jsonObjectMapper = new ObjectMapper();
-    private Long lastReceiveLSN;
     private Decode decode;
 
     public static final String MIME_TYPE_OUTPUT_DEFAULT = "application/json";
 
 
-    public Stream(String pub, String slt, ConnectionManager connectionManager) throws SQLException {
-        this(pub, slt, null, connectionManager);
-    }
-
-    public Stream(String pub, String slt, Long lsn, ConnectionManager connectionManager) throws SQLException {
-        this.connectionManager = connectionManager;
+    public Stream(String pub, String slot, ConnectionManager connectionManager, Long lsn) throws SQLException {
+        Objects.requireNonNull(pub);
+        Objects.requireNonNull(slot);
+        this.connectionManager = Objects.requireNonNull(connectionManager);
         PGConnection pgcon = connectionManager.getReplicationConnection().unwrap(PGConnection.class);
 
         ChainedLogicalStreamBuilder repStreamBuilder = pgcon.getReplicationAPI()
                 .replicationStream()
                 .logical()
-                .withSlotName(slt)
+                .withSlotName(slot)
                 .withSlotOption("proto_version", "1")
                 .withSlotOption("publication_names", pub)
                 .withStatusInterval(1, TimeUnit.SECONDS);
@@ -106,7 +104,7 @@ public class Stream {
             repStream.setFlushedLSN(repStream.getLastReceiveLSN());
         }
 
-        lastReceiveLSN = repStream.getLastReceiveLSN().asLong();
+        Long lastReceiveLSN = repStream.getLastReceiveLSN().asLong();
 
         return new Event(messages, lastReceiveLSN, isSimpleEvent, withBeginCommit, false);
     }
@@ -120,7 +118,4 @@ public class Stream {
         }
     }
 
-    public Long getLastReceiveLSN() {
-        return this.lastReceiveLSN;
-    }
 }

@@ -19,6 +19,7 @@ package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.nifi.cdc.CDCException;
+import org.apache.nifi.logging.ComponentLog;
 import org.postgresql.PGConnection;
 
 import java.io.IOException;
@@ -34,21 +35,15 @@ public class PGEasyReplication {
     private final String publication;
     private final String slot;
     private final ConnectionManager connectionManager;
+    private final ComponentLog log;
+
     private Stream stream;
 
-    public static final boolean SLOT_DROP_IF_EXISTS_DEFAULT = false;
-    public static final boolean IS_SIMPLE_EVENT_DEFAULT = true;
-    public static final boolean INCLUDE_BEGIN_COMMIT_DEFAULT = false;
-    public static final String MIME_TYPE_OUTPUT_DEFAULT = "application/json";
-
-    public PGEasyReplication(String pub, String slt, ConnectionManager connectionManager) {
+    public PGEasyReplication(String pub, String slt, ConnectionManager connectionManager, ComponentLog log) {
         this.publication = Objects.requireNonNull(pub);
         this.slot = Objects.requireNonNull(slt);
         this.connectionManager = Objects.requireNonNull(connectionManager);
-    }
-
-    public void initializeLogicalReplication() {
-        this.initializeLogicalReplication(SLOT_DROP_IF_EXISTS_DEFAULT);
+        this.log = Objects.requireNonNull(log);
     }
 
     public void initializeLogicalReplication(boolean slotDropIfExists) {
@@ -56,6 +51,7 @@ public class PGEasyReplication {
             stmt.setString(1, slot);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
+                    log.info("Logical replication slot {} found", slot);
                     // If slot exists
                     if (slotDropIfExists) {
                         this.dropReplicationSlot();
@@ -71,6 +67,7 @@ public class PGEasyReplication {
     }
 
     private void createReplicationSlot() throws SQLException {
+        log.info("Creating replication slot {}", slot);
         PGConnection pgcon = connectionManager.getReplicationConnection().unwrap(PGConnection.class);
 
         // More details about pgoutput options in PostgreSQL project: https://github.com/postgres, source file: postgres/src/backend/replication/pgoutput/pgoutput.c
@@ -83,12 +80,9 @@ public class PGEasyReplication {
     }
 
     private void dropReplicationSlot() throws SQLException {
-        PGConnection pgcon = this.connectionManager.getReplicationConnection().unwrap(PGConnection.class);
+        log.info("Dropping replication slot {}", slot);
+        PGConnection pgcon = connectionManager.getReplicationConnection().unwrap(PGConnection.class);
         pgcon.getReplicationAPI().dropReplicationSlot(slot);
-    }
-
-    public Event getSnapshot() throws CDCException {
-        return getSnapshot(MIME_TYPE_OUTPUT_DEFAULT);
     }
 
     public Event getSnapshot(String outputFormat) throws CDCException {
@@ -100,18 +94,6 @@ public class PGEasyReplication {
         }
     }
 
-    public Event readEvent() throws CDCException {
-        return readEvent(IS_SIMPLE_EVENT_DEFAULT, INCLUDE_BEGIN_COMMIT_DEFAULT, MIME_TYPE_OUTPUT_DEFAULT, null);
-    }
-
-    public Event readEvent(boolean isSimpleEvent) throws CDCException {
-        return readEvent(isSimpleEvent, INCLUDE_BEGIN_COMMIT_DEFAULT, MIME_TYPE_OUTPUT_DEFAULT, null);
-    }
-
-    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit) throws CDCException {
-        return readEvent(isSimpleEvent, withBeginCommit, MIME_TYPE_OUTPUT_DEFAULT, null);
-    }
-
     public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit, String outputFormat) throws CDCException {
         return readEvent(isSimpleEvent, withBeginCommit, outputFormat, null);
     }
@@ -120,7 +102,8 @@ public class PGEasyReplication {
         try {
             if (stream == null) {
                 // First read stream
-                stream = new Stream(this.publication, this.slot, startLSN, this.connectionManager);
+                log.debug("Initialize replication stream");
+                stream = new Stream(publication, slot, connectionManager, startLSN);
             }
             return stream.readStream(isSimpleEvent, withBeginCommit, outputFormat);
         } catch (SQLException | InterruptedException | ParseException | UnsupportedEncodingException | JsonProcessingException ex) {

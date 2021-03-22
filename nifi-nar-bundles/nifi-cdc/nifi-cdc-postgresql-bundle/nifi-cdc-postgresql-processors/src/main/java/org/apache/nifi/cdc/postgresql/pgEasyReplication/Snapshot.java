@@ -17,81 +17,77 @@
 
 package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
+import org.postgresql.PGConnection;
+import org.postgresql.copy.CopyManager;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
-
-import org.postgresql.PGConnection;
-import org.postgresql.copy.CopyManager;
+import java.util.List;
+import java.util.Objects;
 
 /*
  * Snapshots are copies of published table data.
  */
-
 public class Snapshot {
 
-    private String publication;
-    private ConnectionManager connectionManager;
+    private final String publication;
+    private final ConnectionManager connectionManager;
 
     public static final String MIME_TYPE_OUTPUT_DEFAULT = "application/json";
 
     public Snapshot(String pub, ConnectionManager connectionManager) {
-        this.publication = pub;
-        this.connectionManager = connectionManager;
+        this.publication = Objects.requireNonNull(pub);
+        this.connectionManager = Objects.requireNonNull(connectionManager);
     }
 
-    public ArrayList<String> getPublicationTables() throws SQLException {
-        PreparedStatement stmt = this.connectionManager.getSQLConnection().prepareStatement("SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = ?");
-
-        stmt.setString(1, this.publication);
-        ResultSet rs = stmt.executeQuery();
-
-        ArrayList<String> pubTables = new ArrayList<String>();
-
-        while (rs.next()) {
-            pubTables.add(rs.getString(1) + "." + rs.getString(2));
+    public List<String> getPublicationTables() throws SQLException {
+        try (PreparedStatement stmt = connectionManager.getSQLConnection().prepareStatement("SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = ?")) {
+            stmt.setString(1, this.publication);
+            try (ResultSet rs = stmt.executeQuery()) {
+                List<String> pubTables = new ArrayList<>();
+                while (rs.next()) {
+                    pubTables.add(rs.getString(1) + "." + rs.getString(2));
+                }
+                return pubTables;
+            }
         }
-
-        rs.close();
-        stmt.close();
-
-        return pubTables;
     }
 
-    public ArrayList<String> getInitialSnapshotTableJSON(String tableName) throws SQLException, IOException {
-        PGConnection pgcon = this.connectionManager.getSQLConnection().unwrap(PGConnection.class);
+    // WARNING : this method loads the entire table in memory!
+    private List<String> getInitialSnapshotTableJSON(String tableName) throws SQLException, IOException {
+        PGConnection pgcon = connectionManager.getSQLConnection().unwrap(PGConnection.class);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
 
         CopyManager manager = pgcon.getCopyAPI();
         manager.copyOut("COPY (SELECT REGEXP_REPLACE(ROW_TO_JSON(t)::TEXT, '\\\\\\\\', '\\\\', 'g') FROM (SELECT * FROM " + tableName + ") t) TO STDOUT ", out);
-
-        return new ArrayList<String>(Arrays.asList(out.toString("UTF-8").split("\n")));
+        return new ArrayList<>(Arrays.asList(out.toString(StandardCharsets.UTF_8.name()).split("\n")));
     }
 
     public Event getInitialSnapshot(String outputFormat) throws SQLException, IOException {
-        LinkedList<String> snapshot = new LinkedList<String>();
+        List<String> snapshot = new LinkedList<>();
 
-        ArrayList<String> pubTables = this.getPublicationTables();
+        List<String> pubTables = this.getPublicationTables();
 
         switch (outputFormat) {
-        case MIME_TYPE_OUTPUT_DEFAULT:
+            case MIME_TYPE_OUTPUT_DEFAULT:
 
-            for (String table : pubTables) {
-                ArrayList<String> lines = this.getInitialSnapshotTableJSON(table);
+                for (String table : pubTables) {
+                    List<String> lines = getInitialSnapshotTableJSON(table);
 
-                snapshot.add("{\"snapshot\":{\"relationName\":\"" + table + "\",\"tupleData\":" + lines.toString().replace("\\\\\"", "\\\"") + "}}");
-            }
+                    snapshot.add("{\"snapshot\":{\"relationName\":\"" + table + "\",\"tupleData\":" + lines.toString().replace("\\\\\"", "\\\"") + "}}");
+                }
 
-            return new Event(snapshot, null, true, false, false);
+                return new Event(snapshot, null, true, false, false);
 
-        default:
-
-            throw new IllegalArgumentException("Invalid output format!");
+            default:
+                throw new IllegalArgumentException("Invalid output format " + outputFormat);
         }
     }
 }

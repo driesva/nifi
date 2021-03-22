@@ -37,7 +37,7 @@ class MockConnectionManager extends ConnectionManager{
     Connection repConnection
     
     @Override
-    void setProperties(String server, String database, String user, String password, String driverName) {
+    void setProperties(String server, String database, String user, String password) {
         this.server = server;
         this.database = database;
         this.user = user;

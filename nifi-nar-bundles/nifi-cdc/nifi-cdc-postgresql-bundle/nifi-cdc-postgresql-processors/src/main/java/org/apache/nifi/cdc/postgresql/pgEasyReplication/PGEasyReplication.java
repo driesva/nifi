@@ -17,25 +17,24 @@
 
 package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import org.apache.nifi.cdc.CDCException;
+import org.postgresql.PGConnection;
+
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.text.ParseException;
-import org.postgresql.PGConnection;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-
-import org.apache.nifi.cdc.postgresql.pgEasyReplication.Event;
-import org.apache.nifi.cdc.postgresql.pgEasyReplication.Snapshot;
+import java.util.Objects;
 
 public class PGEasyReplication {
 
-    private String publication;
-    private String slot;
+    private final String publication;
+    private final String slot;
+    private final ConnectionManager connectionManager;
     private Stream stream;
-    private ConnectionManager connectionManager;
 
     public static final boolean SLOT_DROP_IF_EXISTS_DEFAULT = false;
     public static final boolean IS_SIMPLE_EVENT_DEFAULT = true;
@@ -43,9 +42,9 @@ public class PGEasyReplication {
     public static final String MIME_TYPE_OUTPUT_DEFAULT = "application/json";
 
     public PGEasyReplication(String pub, String slt, ConnectionManager connectionManager) {
-        this.publication = pub;
-        this.slot = slt;
-        this.connectionManager = connectionManager;
+        this.publication = Objects.requireNonNull(pub);
+        this.slot = Objects.requireNonNull(slt);
+        this.connectionManager = Objects.requireNonNull(connectionManager);
     }
 
     public void initializeLogicalReplication() {
@@ -53,107 +52,80 @@ public class PGEasyReplication {
     }
 
     public void initializeLogicalReplication(boolean slotDropIfExists) {
-        try {
-            PreparedStatement stmt = this.connectionManager.getSQLConnection().prepareStatement("select 1 from pg_catalog.pg_replication_slots WHERE slot_name = ?");
-
-            stmt.setString(1, this.slot);
-            ResultSet rs = stmt.executeQuery();
-
-            if (rs.next()) {
-                // If slot exists
-                if (slotDropIfExists) {
-                    this.dropReplicationSlot();
+        try (PreparedStatement stmt = this.connectionManager.getSQLConnection().prepareStatement("select 1 from pg_catalog.pg_replication_slots WHERE slot_name = ?")) {
+            stmt.setString(1, slot);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    // If slot exists
+                    if (slotDropIfExists) {
+                        this.dropReplicationSlot();
+                        this.createReplicationSlot();
+                    }
+                } else {
                     this.createReplicationSlot();
                 }
-            } else {
-                this.createReplicationSlot();
             }
-
-        } catch (SQLException e) {
-            e.printStackTrace();
+        } catch (SQLException sqlEx) {
+            throw new IllegalStateException("Failed to initialize the logical replication slot", sqlEx);
         }
     }
 
-    public void createReplicationSlot() {
-        try {
-            PGConnection pgcon = this.connectionManager.getReplicationConnection().unwrap(PGConnection.class);
+    private void createReplicationSlot() throws SQLException {
+        PGConnection pgcon = connectionManager.getReplicationConnection().unwrap(PGConnection.class);
 
-            // More details about pgoutput options in PostgreSQL project: https://github.com/postgres, source file: postgres/src/backend/replication/pgoutput/pgoutput.c
-            pgcon.getReplicationAPI().createReplicationSlot().logical().withSlotName(this.slot).withOutputPlugin("pgoutput").make();
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
+        // More details about pgoutput options in PostgreSQL project: https://github.com/postgres, source file: postgres/src/backend/replication/pgoutput/pgoutput.c
+        pgcon.getReplicationAPI()
+                .createReplicationSlot()
+                .logical()
+                .withSlotName(slot)
+                .withOutputPlugin("pgoutput")
+                .make();
     }
 
-    public void dropReplicationSlot() {
-        try {
-            PGConnection pgcon = this.connectionManager.getReplicationConnection().unwrap(PGConnection.class);
-            pgcon.getReplicationAPI().dropReplicationSlot(this.slot);
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
+    private void dropReplicationSlot() throws SQLException {
+        PGConnection pgcon = this.connectionManager.getReplicationConnection().unwrap(PGConnection.class);
+        pgcon.getReplicationAPI().dropReplicationSlot(slot);
     }
 
-    public Event getSnapshot() {
-        return this.getSnapshot(MIME_TYPE_OUTPUT_DEFAULT);
+    public Event getSnapshot() throws CDCException {
+        return getSnapshot(MIME_TYPE_OUTPUT_DEFAULT);
     }
 
-    public Event getSnapshot(String outputFormat) {
-        Event event = null;
-
+    public Event getSnapshot(String outputFormat) throws CDCException {
         try {
             Snapshot snapshot = new Snapshot(this.publication, this.connectionManager);
-            event = snapshot.getInitialSnapshot(outputFormat);
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } catch (IOException e) {
-            e.printStackTrace();
+            return snapshot.getInitialSnapshot(outputFormat);
+        } catch (SQLException | IOException ex) {
+            throw new CDCException("Error while obtaining snapshot", ex);
         }
-
-        return event;
     }
 
-    public Event readEvent() {
-        return this.readEvent(IS_SIMPLE_EVENT_DEFAULT, INCLUDE_BEGIN_COMMIT_DEFAULT, MIME_TYPE_OUTPUT_DEFAULT, null);
+    public Event readEvent() throws CDCException {
+        return readEvent(IS_SIMPLE_EVENT_DEFAULT, INCLUDE_BEGIN_COMMIT_DEFAULT, MIME_TYPE_OUTPUT_DEFAULT, null);
     }
 
-    public Event readEvent(boolean isSimpleEvent) {
-        return this.readEvent(isSimpleEvent, INCLUDE_BEGIN_COMMIT_DEFAULT, MIME_TYPE_OUTPUT_DEFAULT, null);
+    public Event readEvent(boolean isSimpleEvent) throws CDCException {
+        return readEvent(isSimpleEvent, INCLUDE_BEGIN_COMMIT_DEFAULT, MIME_TYPE_OUTPUT_DEFAULT, null);
     }
 
-    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit) {
-        return this.readEvent(isSimpleEvent, withBeginCommit, MIME_TYPE_OUTPUT_DEFAULT, null);
+    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit) throws CDCException {
+        return readEvent(isSimpleEvent, withBeginCommit, MIME_TYPE_OUTPUT_DEFAULT, null);
     }
 
-    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit, String outputFormat) {
-        return this.readEvent(isSimpleEvent, withBeginCommit, outputFormat, null);
+    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit, String outputFormat) throws CDCException {
+        return readEvent(isSimpleEvent, withBeginCommit, outputFormat, null);
     }
 
-    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit, String outputFormat, Long startLSN) {
-        Event event = null;
-
+    public Event readEvent(boolean isSimpleEvent, boolean withBeginCommit, String outputFormat, Long startLSN) throws CDCException {
         try {
-            if (this.stream == null) {
+            if (stream == null) {
                 // First read stream
-                this.stream = new Stream(this.publication, this.slot, startLSN, this.connectionManager);
+                stream = new Stream(this.publication, this.slot, startLSN, this.connectionManager);
             }
-
-            event = this.stream.readStream(isSimpleEvent, withBeginCommit, outputFormat);
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        } catch (ParseException e) {
-            e.printStackTrace();
-        } catch (UnsupportedEncodingException e) {
-            e.printStackTrace();
-        } catch (JsonProcessingException e) {
-            e.printStackTrace();
+            return stream.readStream(isSimpleEvent, withBeginCommit, outputFormat);
+        } catch (SQLException | InterruptedException | ParseException | UnsupportedEncodingException | JsonProcessingException ex) {
+            throw new CDCException("Error while reading CDC event", ex);
         }
-
-        return event;
     }
+
 }

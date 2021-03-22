@@ -19,33 +19,31 @@ package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.util.Properties;
 
 public class ConnectionManager {
 
     private String server;
     private String database;
-    private String driverName;
     private String user;
     private String password;
     private Connection sqlConnection;
     private Connection repConnection;
 
-    public void setProperties(String server, String database, String user, String password, String driverName) {
+    public void setProperties(String server, String database, String user, String password) {
         this.server = server;
         this.database = database;
         this.user = user;
-        this.driverName = driverName;
 
         if (password == null) {
             password = "";
         }
 
         this.password = password;
-
     }
 
-    public void createReplicationConnection() throws Exception {
+    public void createReplicationConnection() throws SQLException {
 
         String url = "jdbc:postgresql://" + this.server + "/" + this.database;
 
@@ -56,21 +54,20 @@ public class ConnectionManager {
         props.put("replication", "database");
         props.put("preferQueryMode", "simple");
 
-        Connection conn = null;
-        Class.forName(this.driverName);
-        conn = DriverManager.getConnection(url, props);
-        this.repConnection = conn;
+        this.repConnection = DriverManager.getConnection(url, props);
     }
 
     public Connection getReplicationConnection() {
         return this.repConnection;
     }
 
-    public void closeReplicationConnection() throws Exception {
-        this.repConnection.close();
+    public void closeReplicationConnection() throws SQLException {
+        if (repConnection != null) {
+            repConnection.close();
+        }
     }
 
-    public void createSQLConnection() throws Exception {
+    public void createSQLConnection() throws SQLException {
 
         String url = "jdbc:postgresql://" + this.server + "/" + this.database;
 
@@ -78,9 +75,7 @@ public class ConnectionManager {
         props.put("user", this.user);
         props.put("password", this.password);
 
-        Connection conn = null;
-        Class.forName(this.driverName);
-        conn = DriverManager.getConnection(url, props);
+        Connection conn = DriverManager.getConnection(url, props);
         conn.setAutoCommit(true);
         this.sqlConnection = conn;
     }
@@ -89,8 +84,10 @@ public class ConnectionManager {
         return this.sqlConnection;
     }
 
-    public void closeSQLConnection() throws Exception {
-        this.sqlConnection.close();
+    public void closeSQLConnection() throws SQLException {
+        if (sqlConnection != null) {
+            sqlConnection.close();
+        }
     }
 
 }

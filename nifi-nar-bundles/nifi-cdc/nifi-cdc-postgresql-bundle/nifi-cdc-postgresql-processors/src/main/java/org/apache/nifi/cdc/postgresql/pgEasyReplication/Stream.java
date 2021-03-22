@@ -17,33 +17,34 @@
 
 package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.postgresql.PGConnection;
+import org.postgresql.replication.LogSequenceNumber;
+import org.postgresql.replication.PGReplicationStream;
+import org.postgresql.replication.fluent.logical.ChainedLogicalStreamBuilder;
+
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.sql.SQLException;
 import java.text.ParseException;
-import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import org.postgresql.PGConnection;
-import org.postgresql.replication.LogSequenceNumber;
-import org.postgresql.replication.PGReplicationStream;
-
-import org.apache.nifi.cdc.postgresql.pgEasyReplication.ConnectionManager;
 
 
 /* Streams are data changes captured (BEGIN, COMMIT, INSERT, UPDATE, DELETE, etc.) via Slot Replication API and decoded. */
 public class Stream {
 
-    private PGReplicationStream repStream;
+    private final PGReplicationStream repStream;
+    private final ConnectionManager connectionManager;
+    private final ObjectMapper jsonObjectMapper = new ObjectMapper();
     private Long lastReceiveLSN;
     private Decode decode;
-    private ConnectionManager connectionManager;
 
     public static final String MIME_TYPE_OUTPUT_DEFAULT = "application/json";
+
 
     public Stream(String pub, String slt, ConnectionManager connectionManager) throws SQLException {
         this(pub, slt, null, connectionManager);
@@ -51,74 +52,71 @@ public class Stream {
 
     public Stream(String pub, String slt, Long lsn, ConnectionManager connectionManager) throws SQLException {
         this.connectionManager = connectionManager;
-        PGConnection pgcon = this.connectionManager.getReplicationConnection().unwrap(PGConnection.class);
+        PGConnection pgcon = connectionManager.getReplicationConnection().unwrap(PGConnection.class);
 
-        if (lsn == null) {
-            // More details about pgoutput options in PostgreSQL project: https://github.com/postgres, source file: postgres/src/backend/replication/pgoutput/pgoutput.c
-            this.repStream = pgcon.getReplicationAPI().replicationStream().logical().withSlotName(slt).withSlotOption("proto_version", "1").withSlotOption("publication_names", pub)
-                    .withStatusInterval(1, TimeUnit.SECONDS).start();
+        ChainedLogicalStreamBuilder repStreamBuilder = pgcon.getReplicationAPI()
+                .replicationStream()
+                .logical()
+                .withSlotName(slt)
+                .withSlotOption("proto_version", "1")
+                .withSlotOption("publication_names", pub)
+                .withStatusInterval(1, TimeUnit.SECONDS);
 
-        } else {
+        if (lsn != null) {
             // Reading from LSN start position
             LogSequenceNumber startLSN = LogSequenceNumber.valueOf(lsn);
-
-            // More details about pgoutput options in PostgreSQL project: https://github.com/postgres, source file: postgres/src/backend/replication/pgoutput/pgoutput.c
-            this.repStream = pgcon.getReplicationAPI().replicationStream().logical().withSlotName(slt).withSlotOption("proto_version", "1").withSlotOption("publication_names", pub)
-                    .withStatusInterval(1, TimeUnit.SECONDS).withStartPosition(startLSN).start();
+            repStreamBuilder.withStartPosition(startLSN);
         }
+
+        repStream = repStreamBuilder.start();
     }
 
     public Event readStream(boolean isSimpleEvent, boolean withBeginCommit, String outputFormat)
             throws SQLException, InterruptedException, ParseException, UnsupportedEncodingException, JsonProcessingException {
 
-        LinkedList<String> messages = new LinkedList<String>();
+        List<String> messages = new LinkedList<>();
 
         if (this.decode == null) {
             // First read stream
-            this.decode = new Decode();
-            decode.loadDataTypes(this.connectionManager);
+            decode = new Decode();
+            decode.loadDataTypes(connectionManager);
         }
 
         while (true) {
-            ByteBuffer buffer = this.repStream.readPending();
+            ByteBuffer buffer = repStream.readPending();
 
             if (buffer == null) {
                 break;
             }
 
-            HashMap<String, Object> message = null;
+            Map<String, Object> message;
 
             if (isSimpleEvent) {
-                message = this.decode.decodeLogicalReplicationMessageSimple(buffer, withBeginCommit);
+                message = decode.decodeLogicalReplicationMessageSimple(buffer, withBeginCommit);
             } else {
-                message = this.decode.decodeLogicalReplicationMessage(buffer, withBeginCommit);
+                message = decode.decodeLogicalReplicationMessage(buffer, withBeginCommit);
             }
 
             if (!message.isEmpty()) { // Skip empty messages
-                messages.addLast(this.convertMessage(message, outputFormat.trim().toLowerCase()));
+                messages.add(this.convertMessage(message, outputFormat.trim().toLowerCase()));
             }
 
             // Replication feedback
-            this.repStream.setAppliedLSN(this.repStream.getLastReceiveLSN());
-            this.repStream.setFlushedLSN(this.repStream.getLastReceiveLSN());
+            repStream.setAppliedLSN(repStream.getLastReceiveLSN());
+            repStream.setFlushedLSN(repStream.getLastReceiveLSN());
         }
 
-        this.lastReceiveLSN = this.repStream.getLastReceiveLSN().asLong();
+        lastReceiveLSN = repStream.getLastReceiveLSN().asLong();
 
-        return new Event(messages, this.lastReceiveLSN, isSimpleEvent, withBeginCommit, false);
+        return new Event(messages, lastReceiveLSN, isSimpleEvent, withBeginCommit, false);
     }
 
-    public String convertMessage(HashMap<String, Object> message, String outputFormat) throws JsonProcessingException {
-
+    public String convertMessage(Map<String, Object> message, String outputFormat) throws JsonProcessingException {
         switch (outputFormat) {
-        case MIME_TYPE_OUTPUT_DEFAULT:
-
-            ObjectMapper mapper = new ObjectMapper();
-            return mapper.writeValueAsString(message);
-
-        default:
-
-            throw new IllegalArgumentException("Invalid output format!");
+            case MIME_TYPE_OUTPUT_DEFAULT:
+                return jsonObjectMapper.writeValueAsString(message);
+            default:
+                throw new IllegalArgumentException("Invalid output format:" + outputFormat);
         }
     }
 

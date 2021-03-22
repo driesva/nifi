@@ -19,6 +19,7 @@ package org.apache.nifi.cdc.postgresql.pgEasyReplication;
 
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -28,17 +29,20 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-import org.apache.nifi.cdc.postgresql.pgEasyReplication.ConnectionManager;
-
+/**
+ * For reference: https://www.postgresql.org/docs/10/protocol-logicalrep-message-formats.html
+ */
 public class Decode {
 
-    private static HashMap<Integer, String> dataTypes = new HashMap<Integer, String>();
-    private HashMap<Integer, Relation> relations = new HashMap<Integer, Relation>();
+    private final Map<Integer, String> dataTypes = new HashMap<>();
+    private final Map<Integer, Relation> relations = new HashMap<>();
 
-    public HashMap<String, Object> decodeLogicalReplicationMessage(ByteBuffer buffer, boolean withBeginCommit) throws ParseException, SQLException, UnsupportedEncodingException {
+    public Map<String, Object> decodeLogicalReplicationMessage(ByteBuffer buffer, boolean withBeginCommit) throws ParseException, SQLException, UnsupportedEncodingException {
 
-        HashMap<String, Object> message = new HashMap<String, Object>();
+        Map<String, Object> message = new HashMap<>();
 
         char msgType = (char) buffer.get(0); /* (Byte1) Identifies the message as a begin message. */
         int position = 1;
@@ -85,7 +89,7 @@ public class Decode {
             byte[] bytes_O = new byte[buffer.remaining()];
             buffer.get(bytes_O);
 
-            message.put("originName", new String(bytes_O, "UTF-8")); /* (String) Name of the origin. */
+            message.put("originName", new String(bytes_O, StandardCharsets.UTF_8)); /* (String) Name of the origin. */
 
             return message;
 
@@ -99,7 +103,7 @@ public class Decode {
             buffer.position(0);
             byte[] bytes_R = new byte[buffer.capacity()];
             buffer.get(bytes_R);
-            String string_R = new String(bytes_R, "UTF-8");
+            String string_R = new String(bytes_R, StandardCharsets.UTF_8);
 
             int firstStringEnd = string_R.indexOf(0, position); /* ASCII 0 = Null */
             int secondStringEnd = string_R.indexOf(0, firstStringEnd + 1); /* ASCII 0 = Null */
@@ -120,11 +124,11 @@ public class Decode {
             message.put("numColumns", buffer.getShort(position)); /* (Int16) Number of columns. */
             position += 2;
 
-            ArrayList<HashMap<String, Object>> columns = new ArrayList<HashMap<String, Object>>();
+            List<Map<String, Object>> columns = new ArrayList<>();
 
             for (int i = 0; i < ((Short) message.get("numColumns")); i++) {
 
-                HashMap<String, Object> column = new HashMap<String, Object>();
+                Map<String, Object> column = new HashMap<>();
 
                 column.put("isKey", buffer.get(position)); /*
                  * (Int8) Flags for the column. Currently can be either 0 for no flags or 1 which marks the column as part of the key.
@@ -157,7 +161,7 @@ public class Decode {
             buffer.position(0);
             byte[] bytes_Y = new byte[buffer.capacity()];
             buffer.get(bytes_Y);
-            String string_Y = new String(bytes_Y, "UTF-8");
+            String string_Y = new String(bytes_Y, StandardCharsets.UTF_8);
 
             message.put("namespaceName", string_Y.substring(position, string_Y.indexOf(0, position))); /* (String) Namespace (empty string for pg_catalog). */
             position += ((String) message.get("namespaceName")).length() + 1;
@@ -175,7 +179,7 @@ public class Decode {
              */
             message.put("tupleType", "" + (char) buffer.get(5)); /* (Byte1) Identifies the following TupleData message as a new tuple ('N'). */
 
-            message.put("tupleData", parseTupleData(buffer, 6)[0]); /* (TupleData) TupleData message part representing the contents of new tuple. */
+            message.put("tupleData", parseTupleData(buffer, 6).getData()); /* (TupleData) TupleData message part representing the contents of new tuple. */
 
             return message;
 
@@ -194,9 +198,9 @@ public class Decode {
                      */
             position += 1;
 
-            Object[] tupleData1 = parseTupleData(buffer, position); /* TupleData N, K or O */
-            message.put("tupleData1", tupleData1[0]);
-            position = (Integer) tupleData1[1];
+            TupleData tupleData1 = parseTupleData(buffer, position); /* TupleData N, K or O */
+            message.put("tupleData1", tupleData1.getData());
+            position = tupleData1.getPosition();
 
             if (message.get("tupleType1") == "N") {
                 return message;
@@ -205,8 +209,8 @@ public class Decode {
             message.put("tupleType2", "" + (char) buffer.get(position));
             position += 1;
 
-            Object[] tupleData2 = parseTupleData(buffer, position); /* TupleData N */
-            message.put("tupleData2", tupleData2[0]);
+            TupleData tupleData2 = parseTupleData(buffer, position); /* TupleData N */
+            message.put("tupleData2", tupleData2.getData());
 
             return message;
 
@@ -224,7 +228,7 @@ public class Decode {
              */
             position += 1;
 
-            message.put("tupleData", parseTupleData(buffer, position)[0]); /* TupleData */
+            message.put("tupleData", parseTupleData(buffer, position).getData()); /* TupleData */
 
             return message;
 
@@ -236,12 +240,11 @@ public class Decode {
         }
     }
 
-    public Object[] parseTupleData(ByteBuffer buffer, int position) throws SQLException, UnsupportedEncodingException {
+    public TupleData parseTupleData(ByteBuffer buffer, int position) throws SQLException, UnsupportedEncodingException {
 
-        HashMap<String, Object> data = new HashMap<String, Object>();
-        Object[] result = { data, position };
+        Map<String, Object> data = new HashMap<>();
 
-        String values = "";
+        StringBuilder values = new StringBuilder();
 
         short columns = buffer.getShort(position); /* (Int16) Number of columns. */
         position += 2; /* short = 2 bytes */
@@ -253,9 +256,9 @@ public class Decode {
              */
             position += 1; /* byte = 1 byte */
 
-            if (i > 0)
-                values += ",";
-
+            if (i > 0) {
+                values.append(',');
+            }
             if (statusValue == 't') {
 
                 int lenValue = buffer.getInt(position); /* (Int32) Length of the column value. */
@@ -266,26 +269,26 @@ public class Decode {
                 buffer.get(bytes);
                 position += lenValue; /* String = length * bytes */
 
-                values += new String(bytes, "UTF-8"); /* (ByteN) The value of the column, in text format. */
+                values.append(new String(bytes, StandardCharsets.UTF_8)); /* (ByteN) The value of the column, in text format. */
 
             } else { /* statusValue = 'n' (NULL value) or 'u' (unchanged TOASTED value) */
-
-                values = (statusValue == 'n') ? values + "null" : values + "UTOAST";
+                if (statusValue == 'n') {
+                    values.append("null");
+                } else {
+                    values.append("UTOAST");
+                }
             }
         }
 
         data.put("numColumns", columns);
         data.put("values", "(" + values + ")");
 
-        result[0] = data;
-        result[1] = position;
-
-        return result;
+        return new TupleData(data, position);
     }
 
-    public HashMap<String, Object> decodeLogicalReplicationMessageSimple(ByteBuffer buffer, boolean withBeginCommit) throws ParseException, SQLException, UnsupportedEncodingException {
+    public Map<String, Object> decodeLogicalReplicationMessageSimple(ByteBuffer buffer, boolean withBeginCommit) throws SQLException, UnsupportedEncodingException {
 
-        HashMap<String, Object> message = new HashMap<String, Object>();
+        Map<String, Object> message = new HashMap<>();
 
         char msgType = (char) buffer.get(0); /* (Byte1) Identifies the message as a begin message. */
         int position = 1;
@@ -293,15 +296,17 @@ public class Decode {
         switch (msgType) {
         case 'B': /* Identifies the message as a begin message. */
 
-            if (withBeginCommit)
+            if (withBeginCommit) {
                 message.put("type", "begin");
+            }
 
             return message;
 
         case 'C': /* Identifies the message as a commit message. */
 
-            if (withBeginCommit)
+            if (withBeginCommit) {
                 message.put("type", "commit");
+            }
 
             return message;
 
@@ -320,7 +325,7 @@ public class Decode {
             buffer.position(0);
             byte[] bytes_R = new byte[buffer.capacity()];
             buffer.get(bytes_R);
-            String string_R = new String(bytes_R, "UTF-8");
+            String string_R = new String(bytes_R, StandardCharsets.UTF_8);
 
             int firstStringEnd = string_R.indexOf(0, position); /* ASCII 0 = Null */
             int secondStringEnd = string_R.indexOf(0, firstStringEnd + 1); /* ASCII 0 = Null */
@@ -354,16 +359,15 @@ public class Decode {
                 column.setDataTypeId(buffer.getInt(position)); /* (Int32) ID of the column's data type. */
                 position += 4;
 
-                column.setDataTypeName(Decode.dataTypes.get(column.getDataTypeId()));
+                column.setDataTypeName(dataTypes.get(column.getDataTypeId()));
 
                 column.setTypeModifier(buffer.getInt(position)); /* (Int32) Type modifier of the column (atttypmod). */
                 position += 4;
 
                 relation.putColumn(i, column);
-                ;
             }
 
-            this.relations.put(relation.getId(), relation);
+            relations.put(relation.getId(), relation);
 
             return message;
 
@@ -383,8 +387,8 @@ public class Decode {
 
             position += 1; /* (Byte1) Identifies the following TupleData message as a new tuple ('N'). */
 
-            message.put("relationName", this.relations.get(relationId_I).getFullName());
-            message.put("tupleData", parseTupleDataSimple(relationId_I, buffer, position)[0]);
+            message.put("relationName", relations.get(relationId_I).getFullName());
+            message.put("tupleData", parseTupleDataSimple(relationId_I, buffer, position).getData());
 
             return message;
 
@@ -402,22 +406,22 @@ public class Decode {
              */
             position += 1;
 
-            Object[] tupleData1 = parseTupleDataSimple(relationId_U, buffer, position); /* TupleData N, K or O */
+            TupleData tupleData1 = parseTupleDataSimple(relationId_U, buffer, position); /* TupleData N, K or O */
 
             if (tupleType1 == 'N') {
-                message.put("relationName", this.relations.get(relationId_U).getFullName());
-                message.put("tupleData", tupleData1[0]);
+                message.put("relationName", relations.get(relationId_U).getFullName());
+                message.put("tupleData", tupleData1.getData());
                 return message;
             }
 
-            position = (Integer) tupleData1[1];
+            position = tupleData1.getPosition();
 
             position += 1; /*
              * (Byte1) Either identifies the following TupleData submessage as a key ('K') or as an old tuple ('O') or as a new tuple ('N').
              */
 
             message.put("relationName", this.relations.get(relationId_U).getFullName());
-            message.put("tupleData", parseTupleDataSimple(relationId_U, buffer, position)[0]); /* TupleData N */
+            message.put("tupleData", parseTupleDataSimple(relationId_U, buffer, position).getData()); /* TupleData N */
 
             return message;
 
@@ -435,7 +439,7 @@ public class Decode {
              */
 
             message.put("relationName", this.relations.get(relationId_D).getFullName());
-            message.put("tupleData", parseTupleDataSimple(relationId_D, buffer, position)[0]); /* TupleData */
+            message.put("tupleData", parseTupleDataSimple(relationId_D, buffer, position).getData()); /* TupleData */
 
             return message;
 
@@ -447,10 +451,9 @@ public class Decode {
         }
     }
 
-    public Object[] parseTupleDataSimple(int relationId, ByteBuffer buffer, int position) throws SQLException, UnsupportedEncodingException {
+    private TupleData parseTupleDataSimple(int relationId, ByteBuffer buffer, int position) throws SQLException, UnsupportedEncodingException {
 
-        HashMap<String, Object> data = new HashMap<String, Object>();
-        Object[] result = { data, position };
+        Map<String, Object> data = new HashMap<>();
 
         short columns = buffer.getShort(position); /* (Int16) Number of columns. */
         position += 2; /* short = 2 bytes */
@@ -477,9 +480,9 @@ public class Decode {
                 if (column.getDataTypeName().startsWith("int")) { /*
                  * (ByteN) The value of the column, in text format. Numeric types are not quoted.
                  */
-                    data.put(column.getName(), Long.parseLong(new String(bytes, "UTF-8")));
+                    data.put(column.getName(), Long.valueOf(new String(bytes, StandardCharsets.UTF_8)));
                 } else {
-                    data.put(column.getName(), new String(bytes, "UTF-8")); /* (ByteN) The value of the column, in text format. */
+                    data.put(column.getName(), new String(bytes, StandardCharsets.UTF_8)); /* (ByteN) The value of the column, in text format. */
                 }
 
             } else { /* statusValue = 'n' (NULL value) or 'u' (unchanged TOASTED value) */
@@ -488,17 +491,13 @@ public class Decode {
                 } else {
                     data.put(column.getName(), "UTOAST");
                 }
-                ;
             }
         }
 
-        result[0] = data;
-        result[1] = position;
-
-        return result;
+        return new TupleData(data, position);
     }
 
-    public String getFormattedPostgreSQLEpochDate(long microseconds) throws ParseException {
+    private String getFormattedPostgreSQLEpochDate(long microseconds) throws ParseException {
 
         Date pgEpochDate = new SimpleDateFormat("yyyy-MM-dd").parse("2000-01-01");
         Calendar cal = Calendar.getInstance();
@@ -509,34 +508,12 @@ public class Decode {
     }
 
     public void loadDataTypes(ConnectionManager connectionManager) throws SQLException {
-
-        Statement stmt = connectionManager.getSQLConnection().createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
-
-        ResultSet rs = stmt.executeQuery("SELECT oid, typname FROM pg_catalog.pg_type");
-
-        while (rs.next()) {
-            Decode.dataTypes.put(rs.getInt(1), rs.getString(2));
-        }
-
-        rs.close();
-        stmt.close();
-    }
-
-    public void printBuffer(ByteBuffer buffer) throws UnsupportedEncodingException {
-
-        byte[] bytesX = new byte[buffer.capacity()];
-        buffer.get(bytesX);
-
-        String stringX = new String(bytesX, "UTF-8");
-
-        char[] charsX = stringX.toCharArray();
-
-        int icharX = 0;
-
-        for (char c : charsX) {
-            int ascii = c;
-            System.out.println("[" + icharX + "] \t" + c + "\t ASCII " + ascii);
-            icharX++;
+        try (Statement stmt = connectionManager.getSQLConnection().createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+             ResultSet rs = stmt.executeQuery("SELECT oid, typname FROM pg_catalog.pg_type")) {
+            while (rs.next()) {
+                dataTypes.put(rs.getInt(1), rs.getString(2));
+            }
         }
     }
+
 }

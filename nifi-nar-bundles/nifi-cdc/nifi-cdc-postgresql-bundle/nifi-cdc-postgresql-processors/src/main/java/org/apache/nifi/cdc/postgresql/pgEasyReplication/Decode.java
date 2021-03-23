@@ -116,7 +116,7 @@ public class Decode {
 
             buffer.position(position);
 
-            message.put("relReplIdent", "" + (char) buffer.get(position)); /*
+            message.put("relReplIdent", String.valueOf((char) buffer.get(position))); /*
              * (Int8) Replica identity setting for the relation (same as relreplident in pg_class).
              */
             position += 1;
@@ -177,7 +177,7 @@ public class Decode {
             message.put("relationId", buffer.getInt(1)); /*
              * (Int32) ID of the relation corresponding to the ID in the relation message.
              */
-            message.put("tupleType", "" + (char) buffer.get(5)); /* (Byte1) Identifies the following TupleData message as a new tuple ('N'). */
+            message.put("tupleType", String.valueOf((char) buffer.get(5))); /* (Byte1) Identifies the following TupleData message as a new tuple ('N'). */
 
             message.put("tupleData", parseTupleData(buffer, 6).getData()); /* (TupleData) TupleData message part representing the contents of new tuple. */
 
@@ -187,26 +187,28 @@ public class Decode {
 
             message.put("type", "update");
 
-            message.put("relationId", buffer.getInt(position)); /*
+            message.put("relationId", buffer.getInt(position));
+            /*
              * (Int32) ID of the relation corresponding to the ID in the relation message.
              */
             position += 4;
 
-            message.put("tupleType1",
-                    "" + (char) buffer.get(position)); /*
-                     * (Byte1) Either identifies the following TupleData submessage as a key ('K') or as an old tuple ('O') or as a new tuple ('N').
-                     */
+            char tupleType1 = (char) buffer.get(position);
+            message.put("tupleType1", String.valueOf(tupleType1));
+            /*
+             * (Byte1) Either identifies the following TupleData submessage as a key ('K') or as an old tuple ('O') or as a new tuple ('N').
+             */
             position += 1;
 
             TupleData tupleData1 = parseTupleData(buffer, position); /* TupleData N, K or O */
             message.put("tupleData1", tupleData1.getData());
             position = tupleData1.getPosition();
 
-            if (message.get("tupleType1") == "N") {
+            if (tupleType1 == 'N') {
                 return message;
             }
 
-            message.put("tupleType2", "" + (char) buffer.get(position));
+            message.put("tupleType2", String.valueOf((char) buffer.get(position)));
             position += 1;
 
             TupleData tupleData2 = parseTupleData(buffer, position); /* TupleData N */
@@ -223,7 +225,7 @@ public class Decode {
              */
             position += 4;
 
-            message.put("tupleType", "" + (char) buffer.get(position)); /*
+            message.put("tupleType", String.valueOf((char) buffer.get(position))); /*
              * (Byte1) Either identifies the following TupleData submessage as a key ('K') or as an old tuple ('O').
              */
             position += 1;

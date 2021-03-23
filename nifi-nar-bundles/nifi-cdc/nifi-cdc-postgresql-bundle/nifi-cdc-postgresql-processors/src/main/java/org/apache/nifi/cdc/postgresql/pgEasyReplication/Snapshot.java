@@ -84,7 +84,7 @@ public class Snapshot {
                     snapshot.add("{\"snapshot\":{\"relationName\":\"" + table + "\",\"tupleData\":" + lines.toString().replace("\\\\\"", "\\\"") + "}}");
                 }
 
-                return new Event(snapshot, null, true, false, false);
+                return new Event(snapshot, null, true, false, true);
 
             default:
                 throw new IllegalArgumentException("Invalid output format " + outputFormat);

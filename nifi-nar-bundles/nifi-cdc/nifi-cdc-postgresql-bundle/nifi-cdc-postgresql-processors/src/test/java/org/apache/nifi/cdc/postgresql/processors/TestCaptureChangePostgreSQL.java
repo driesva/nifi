@@ -49,12 +49,20 @@ public class TestCaptureChangePostgreSQL {
 
     private static final DockerImageName POSTGRES_TEST_IMAGE = DockerImageName.parse("postgres:10");
 
+    private static final String JSON_PATH_TYPE = "$.type";
+    // simple messages
     private static final String JSON_PATH_TEST_COLUMN = "$.tupleData.test_column";
     private static final String JSON_PATH_RELATION_NAME = "$.relationName";
-    private static final String JSON_PATH_TYPE = "$.type";
+    // snapshot messages
     private static final String JSON_PATH_SNAPSHOT_RELATION_NAME = "$.snapshot.relationName";
     private static final String JSON_PATH_SNAPSHOT_TEST_COLUM = "$.snapshot.tupleData[0].test_column";
-    private static final String JSON_PATH_COMMIT_TYPE = "$.type";
+    // complex messages
+    private static final String JSON_PATH_TUPLE_TYPE = "$.tupleType";
+    private static final String JSON_PATH_TUPLE_DATA_VALUES = "$.tupleData.values";
+    private static final String JSON_PATH_TUPLE_TYPE_1 = "$.tupleType1";
+    private static final String JSON_PATH_TUPLE_DATA_1_VALUES = "$.tupleData1.values";
+    private static final String JSON_PATH_TUPLE_TYPE_2 = "$.tupleType2";
+    private static final String JSON_PATH_TUPLE_DATA_2_VALUES = "$.tupleData2.values";
 
     private TestRunner testRunner;
 
@@ -64,7 +72,7 @@ public class TestCaptureChangePostgreSQL {
     }
 
     @Test
-    public void cdcProcessorWithExistingSlotProducesSimpleEvents() throws Exception {
+    public void cdcProcessorWithExistingSlotProducingSimpleEvents() throws Exception {
         try (PostgreSQLContainer<?> postgres = createPostgresContainerForLogicalReplication()) {
             postgres.start();
 
@@ -81,6 +89,7 @@ public class TestCaptureChangePostgreSQL {
             assertThat(deleteTestData(postgres), equalTo(1));
 
             testRunner.run();
+
 
             // assert resulting flow files
             List<MockFlowFile> flowFiles = testRunner.getFlowFilesForRelationship(CaptureChangePostgreSQL.REL_SUCCESS);
@@ -103,6 +112,91 @@ public class TestCaptureChangePostgreSQL {
             assertThat(deleteJson.read(JSON_PATH_RELATION_NAME), containsString("test_table"));
             assertThat(deleteJson.read(JSON_PATH_TYPE), equalTo("delete"));
             assertThat(deleteJson.read(JSON_PATH_TEST_COLUMN), nullValue());
+        }
+    }
+
+    @Test
+    public void cdcProcessorWithExistingSlotProducingComplexEvents() throws Exception {
+        try (PostgreSQLContainer<?> postgres = createPostgresContainerForLogicalReplication()) {
+            postgres.start();
+
+            createTestTable(postgres);
+            createPublication(postgres);
+            assertThat(createReplicationSlot(postgres), equalTo(true));
+
+            initTestRunnerWithDefaultProperties(postgres);
+            testRunner.setProperty(CaptureChangePostgreSQL.SIMPLE_EVENTS, Boolean.FALSE.toString());
+
+            testRunner.assertValid();
+
+            assertThat(insertTestData(postgres), equalTo(1));
+            assertThat(updateTestData(postgres), equalTo(1));
+            assertThat(deleteTestData(postgres), equalTo(1));
+
+            testRunner.run();
+
+
+            // assert resulting flow files
+            List<MockFlowFile> flowFiles = testRunner.getFlowFilesForRelationship(CaptureChangePostgreSQL.REL_SUCCESS);
+            assertEquals(4, flowFiles.size()); // 3 DML + 1 relation
+
+            MockFlowFile relationFlowFile = flowFiles.get(0);
+            DocumentContext relationJson = JsonPath.parse(relationFlowFile.getContent());
+            assertThat(relationJson.read(JSON_PATH_RELATION_NAME), containsString("test_table"));
+            assertThat(relationJson.read(JSON_PATH_TYPE), equalTo("relation"));
+
+            MockFlowFile insertFlowFile = flowFiles.get(1);
+            DocumentContext insertJson = JsonPath.parse(insertFlowFile.getContent());
+            assertThat(insertJson.read(JSON_PATH_TUPLE_TYPE), equalTo("N")); // New
+            assertThat(insertJson.read(JSON_PATH_TUPLE_DATA_VALUES), containsString("test_data,"));
+            assertThat(insertJson.read(JSON_PATH_TYPE), equalTo("insert"));
+
+            MockFlowFile updateFlowFile = flowFiles.get(2);
+            DocumentContext updateJson = JsonPath.parse(updateFlowFile.getContent());
+            assertThat(updateJson.read(JSON_PATH_TUPLE_TYPE_1), equalTo("N")); // New
+            assertThat(updateJson.read(JSON_PATH_TUPLE_DATA_1_VALUES), containsString("test_data_update,"));
+            assertThat(updateJson.read(JSON_PATH_TYPE), equalTo("update"));
+
+            MockFlowFile deleteFlowFile = flowFiles.get(3);
+            DocumentContext deleteJson = JsonPath.parse(deleteFlowFile.getContent());
+            assertThat(deleteJson.read(JSON_PATH_TUPLE_TYPE), equalTo("K")); // Key
+            assertThat(deleteJson.read(JSON_PATH_TYPE), equalTo("delete"));
+        }
+    }
+
+    @Test
+    public void cdcProcessorWithExistingSlotReplicaFullProducingCommitMessagesAndComplexEvents() throws Exception {
+        try (PostgreSQLContainer<?> postgres = createPostgresContainerForLogicalReplication()) {
+            postgres.start();
+
+            createTestTable(postgres);
+            setTestTableReplicaIdentityFull(postgres);
+            createPublication(postgres);
+            assertThat(createReplicationSlot(postgres), equalTo(true));
+
+            initTestRunnerWithDefaultProperties(postgres);
+            testRunner.setProperty(CaptureChangePostgreSQL.INCLUDE_BEGIN_COMMIT, Boolean.TRUE.toString());
+            testRunner.setProperty(CaptureChangePostgreSQL.SIMPLE_EVENTS, Boolean.FALSE.toString());
+
+            testRunner.assertValid();
+
+            assertThat(insertTestData(postgres), equalTo(1));
+            assertThat(updateTestData(postgres), equalTo(1));
+            assertThat(deleteTestData(postgres), equalTo(1));
+
+            testRunner.run();
+
+
+            // assert resulting flow files
+            List<MockFlowFile> flowFiles = testRunner.getFlowFilesForRelationship(CaptureChangePostgreSQL.REL_SUCCESS);
+            assertEquals(10, flowFiles.size()); // 3 DML operations each having being / commit message -> 9 + 1 relation message
+
+            MockFlowFile updateFlowFile = flowFiles.get(5);
+            DocumentContext updateJson = JsonPath.parse(updateFlowFile.getContent());
+            assertThat(updateJson.read(JSON_PATH_TUPLE_TYPE_1), equalTo("O")); // Old
+            assertThat(updateJson.read(JSON_PATH_TUPLE_DATA_1_VALUES), containsString("test_data,"));
+            assertThat(updateJson.read(JSON_PATH_TUPLE_TYPE_2), equalTo("N")); // New
+            assertThat(updateJson.read(JSON_PATH_TUPLE_DATA_2_VALUES), containsString("test_data_update,"));
         }
     }
 
@@ -130,13 +224,14 @@ public class TestCaptureChangePostgreSQL {
 
             testRunner.run();
 
+
             // assert resulting flow files
             List<MockFlowFile> flowFiles = testRunner.getFlowFilesForRelationship(CaptureChangePostgreSQL.REL_SUCCESS);
             assertEquals(3, flowFiles.size());
 
             MockFlowFile beginFlowFile = flowFiles.get(0);
             DocumentContext beginJson = JsonPath.parse(beginFlowFile.getContent());
-            assertThat(beginJson.read(JSON_PATH_COMMIT_TYPE), equalTo("begin"));
+            assertThat(beginJson.read(JSON_PATH_TYPE), equalTo("begin"));
 
             MockFlowFile updateFlowFile = flowFiles.get(1);
             DocumentContext updateJson = JsonPath.parse(updateFlowFile.getContent());
@@ -146,7 +241,7 @@ public class TestCaptureChangePostgreSQL {
 
             MockFlowFile commitFlowFile = flowFiles.get(2);
             DocumentContext commitJson = JsonPath.parse(commitFlowFile.getContent());
-            assertThat(commitJson.read(JSON_PATH_COMMIT_TYPE), equalTo("commit"));
+            assertThat(commitJson.read(JSON_PATH_TYPE), equalTo("commit"));
         }
     }
 
@@ -162,6 +257,7 @@ public class TestCaptureChangePostgreSQL {
             initTestRunnerWithDefaultProperties(postgres);
             testRunner.setProperty(CaptureChangePostgreSQL.DROP_SLOT_IF_EXISTS, Boolean.TRUE.toString());
             testRunner.setProperty(CaptureChangePostgreSQL.SNAPSHOT, Boolean.TRUE.toString());
+            // determine JAR file location of Postgres JDBC driver
             URL location = Driver.class.getClassLoader().getResource(Driver.class.getCanonicalName().replace(".", "/") + ".class");
             assertThat(location, notNullValue());
             assertThat(location.toString(), startsWith("jar:"));
@@ -174,6 +270,7 @@ public class TestCaptureChangePostgreSQL {
             assertThat(updateTestData(postgres), equalTo(1));
 
             testRunner.run();
+
 
             // assert resulting flow files
             List<MockFlowFile> flowFiles = testRunner.getFlowFilesForRelationship(CaptureChangePostgreSQL.REL_SUCCESS);
@@ -191,7 +288,7 @@ public class TestCaptureChangePostgreSQL {
                 .withDatabaseName("test_db")
                 .withUsername("unit")
                 .withPassword("test")
-//                .withLogConsumer(out -> System.out.println(out.getUtf8String()))
+                //.withLogConsumer(out -> System.out.println(out.getUtf8String()))
                 .withCommand("postgres -c wal_level=logical");
     }
 
@@ -209,18 +306,23 @@ public class TestCaptureChangePostgreSQL {
         return DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
-    private void createTestTable(PostgreSQLContainer<?> postgres) throws SQLException {
+    private int executeUpdate(PostgreSQLContainer<?> postgres, String query) throws SQLException {
         try (Connection connection = getConnection(postgres);
-             PreparedStatement stmt = connection.prepareStatement("create table test_table (id bigserial primary key, test_column text, ts timestamp default current_timestamp);")) {
-            stmt.executeUpdate();
+             PreparedStatement stmt = connection.prepareStatement(query)) {
+            return stmt.executeUpdate();
         }
     }
 
+    private void createTestTable(PostgreSQLContainer<?> postgres) throws SQLException {
+        executeUpdate(postgres, "CREATE TABLE test_table (id bigserial primary key, test_column text, ts timestamp default current_timestamp);");
+    }
+
     private void createPublication(PostgreSQLContainer<?> postgres) throws SQLException {
-        try (Connection connection = getConnection(postgres);
-             PreparedStatement stmt = connection.prepareStatement("CREATE PUBLICATION test_publication FOR TABLE test_table;")) {
-            stmt.executeUpdate();
-        }
+        executeUpdate(postgres, "CREATE PUBLICATION test_publication FOR TABLE test_table;");
+    }
+
+    private void setTestTableReplicaIdentityFull(PostgreSQLContainer<?> postgres) throws SQLException {
+        executeUpdate(postgres, "ALTER TABLE test_table REPLICA IDENTITY FULL;");
     }
 
     private boolean createReplicationSlot(PostgreSQLContainer<?> postgres) throws SQLException {
@@ -232,17 +334,11 @@ public class TestCaptureChangePostgreSQL {
     }
 
     private int insertTestData(PostgreSQLContainer<?> postgres) throws SQLException {
-        try (Connection connection = getConnection(postgres);
-             PreparedStatement stmt = connection.prepareStatement("INSERT INTO test_table(test_column) VALUES ('test_data');")) {
-            return stmt.executeUpdate();
-        }
+        return executeUpdate(postgres, "INSERT INTO test_table(test_column) VALUES ('test_data');");
     }
 
     private int updateTestData(PostgreSQLContainer<?> postgres) throws SQLException {
-        try (Connection connection = getConnection(postgres);
-             PreparedStatement stmt = connection.prepareStatement("UPDATE test_table SET test_column = 'test_data_update';")) {
-            return stmt.executeUpdate();
-        }
+        return executeUpdate(postgres, "UPDATE test_table SET test_column = 'test_data_update';");
     }
 
     private long getCurrentLsn(PostgreSQLContainer<?> postgres) throws SQLException {
@@ -257,10 +353,7 @@ public class TestCaptureChangePostgreSQL {
     }
 
     private int deleteTestData(PostgreSQLContainer<?> postgres) throws SQLException {
-        try (Connection connection = getConnection(postgres);
-             PreparedStatement stmt = connection.prepareStatement("DELETE FROM test_table;")) {
-            return stmt.executeUpdate();
-        }
+        return executeUpdate(postgres, "DELETE FROM test_table;");
     }
 
 }

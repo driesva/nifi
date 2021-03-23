@@ -1,4 +1,4 @@
-package org.apache.nifi.cdc.postgresql.pgEasyReplication;
+package org.apache.nifi.cdc.postgresql.pgeasyreplication;
 
 import java.util.Collections;
 import java.util.Map;

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.nifi.cdc.postgresql.pgEasyReplication;
+package org.apache.nifi.cdc.postgresql.pgeasyreplication;
 
 import org.postgresql.PGConnection;
 import org.postgresql.copy.CopyManager;

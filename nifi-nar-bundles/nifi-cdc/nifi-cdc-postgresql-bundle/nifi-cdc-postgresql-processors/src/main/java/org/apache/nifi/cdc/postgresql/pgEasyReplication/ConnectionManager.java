@@ -52,7 +52,7 @@ public class ConnectionManager {
 
         String url = "jdbc:postgresql://" + this.server + "/" + this.database;
         log.debug("Creating SQL replication connection for {}", url);
-        
+
         Properties props = new Properties();
         props.put("user", this.user);
         props.put("password", this.password);

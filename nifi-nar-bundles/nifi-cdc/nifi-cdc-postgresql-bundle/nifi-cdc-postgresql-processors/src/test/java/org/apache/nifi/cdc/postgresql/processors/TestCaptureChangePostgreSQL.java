@@ -25,6 +25,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.postgresql.Driver;
 import org.postgresql.replication.LogSequenceNumber;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -43,6 +44,7 @@ import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.CoreMatchers.startsWith;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assume.assumeTrue;
 
 
 public class TestCaptureChangePostgreSQL {
@@ -68,6 +70,8 @@ public class TestCaptureChangePostgreSQL {
 
     @Before
     public void init() {
+        // Docker is not available for MacOS en Windows NiFi Github actions jobs
+        assumeTrue("Docker is not available", DockerClientFactory.instance().isDockerAvailable());
         testRunner = TestRunners.newTestRunner(CaptureChangePostgreSQL.class);
     }
 
